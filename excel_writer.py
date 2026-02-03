@@ -1,91 +1,77 @@
 # excel_writer.py
 import openpyxl
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+from sqlalchemy.orm import Session
+from models import Assignment, Employee, ShiftDefinition, Workplace
+from datetime import timedelta
 
 
-def create_excel_schedule(solver, shift_vars, employees, num_days, num_shifts, shifts_per_day_demand,
-                          unused_colors=None):
+def create_excel_report_from_db(session: Session, workplace_id: int, start_date):
+    """
+    Generates a visual Excel schedule based on assignments stored in the database.
+    """
+    # Fetch workplace info
+    workplace = session.query(Workplace).get(workplace_id)
+    employees = [e for e in workplace.employees if e.is_active]
+    shifts = workplace.shifts
+
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Schedule"
-    ws.sheet_view.rightToLeft = True
+    ws.sheet_view.rightToLeft = True  # Optimized for Hebrew users
 
-    days_names = ["ראשון", "שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת"]
-    shifts_names = ["בוקר", "צהריים", "לילה"]
-
+    # Header styling
     header_font = Font(bold=True, color="FFFFFF")
     header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
-    center_align = Alignment(horizontal='center', vertical='center')
-    thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'),
-                         bottom=Side(style='thin'))
+    center_align = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    thin_border = Border(left=Side(style='thin'), right=Side(style='thin'),
+                         top=Side(style='thin'), bottom=Side(style='thin'))
 
-    # Header
-    ws.cell(row=1, column=1).value = "משמרת"
-    for i, day in enumerate(days_names):
-        cell = ws.cell(row=1, column=i + 2)
-        cell.value = day
+    # Build Header Row (Dates)
+    ws.cell(row=1, column=1).value = "Shift / Day"
+    for d in range(7):
+        current_date = start_date + timedelta(days=d)
+        cell = ws.cell(row=1, column=d + 2)
+        # Displaying Day Name and Date
+        day_name = ["ראשון", "שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת"][d]
+        cell.value = f"{day_name}\n{current_date.strftime('%d/%m')}"
         cell.font = header_font
         cell.fill = header_fill
         cell.alignment = center_align
 
+    # Fill Assignments
     current_row = 2
-    for s_idx, s_name in enumerate(shifts_names):
-        for slot in range(shifts_per_day_demand):
-            shift_cell = ws.cell(row=current_row, column=1)
-            shift_cell.value = f"{s_name} ({slot + 1})"
-            shift_cell.font = Font(bold=True)
-            shift_cell.alignment = center_align
-            shift_cell.border = thin_border
+    for s_def in shifts:
+        # Each shift might have multiple slots (num_staff)
+        for slot in range(s_def.num_staff):
+            ws.cell(row=current_row, column=1).value = f"{s_def.shift_name} ({slot + 1})"
+            ws.cell(row=current_row, column=1).alignment = center_align
+            ws.cell(row=current_row, column=1).border = thin_border
 
-            for d in range(num_days):
-                assigned_workers = []
-                for e_idx, emp in enumerate(employees):
-                    if not emp.is_active: continue
-                    if solver.Value(shift_vars[(e_idx, d, s_idx)]):
-                        assigned_workers.append(emp)
+            for d in range(7):
+                target_date = start_date + timedelta(days=d)
+                # Fetch assignment for this specific date, shift, and slot
+                # We order by ID to maintain consistent slotting
+                assign = session.query(Assignment).filter(
+                    Assignment.workplace_id == workplace_id,
+                    Assignment.shift_id == s_def.id,
+                    Assignment.date == target_date
+                ).all()
 
                 cell = ws.cell(row=current_row, column=d + 2)
                 cell.border = thin_border
                 cell.alignment = center_align
 
-                if len(assigned_workers) > slot:
-                    worker = assigned_workers[slot]
-                    cell.value = worker.name
-                    # Color is directly on Employee, so this works fine
-                    cell.fill = PatternFill(start_color=worker.color, end_color=worker.color, fill_type="solid")
+                if len(assign) > slot:
+                    emp = assign[slot].employee
+                    cell.value = emp.name
+                    if emp.color:
+                        cell.fill = PatternFill(start_color=emp.color, end_color=emp.color, fill_type="solid")
+
             current_row += 1
-        current_row += 1
+        current_row += 1  # Add a gap between different shift types
 
-    # Summary
-    summary_row = current_row + 2
-    ws.cell(row=summary_row, column=1).value = "סיכום עובדים"
-    ws.cell(row=summary_row, column=1).font = Font(bold=True, size=14)
-
-    headers = ["שם", "סהכ", "לילות", "בקרים", "ערבים"]
-    for col_idx, h in enumerate(headers):
-        ws.cell(row=summary_row + 1, column=col_idx + 1).value = h
-        ws.cell(row=summary_row + 1, column=col_idx + 1).font = Font(bold=True)
-
-    row_offset = 2
-    for e_idx, emp in enumerate(employees):
-        if not emp.is_active: continue
-
-        r = summary_row + row_offset
-        row_offset += 1
-
-        name_cell = ws.cell(row=r, column=1)
-        name_cell.value = emp.name
-        name_cell.fill = PatternFill(start_color=emp.color, end_color=emp.color, fill_type="solid")
-
-        nights = sum(solver.Value(shift_vars[(e_idx, d, 2)]) for d in range(num_days))
-        mornings = sum(solver.Value(shift_vars[(e_idx, d, 0)]) for d in range(num_days))
-        evenings = sum(solver.Value(shift_vars[(e_idx, d, 1)]) for d in range(num_days))
-        total = nights + mornings + evenings
-
-        ws.cell(row=r, column=2).value = total
-        ws.cell(row=r, column=3).value = nights
-        ws.cell(row=r, column=4).value = mornings
-        ws.cell(row=r, column=5).value = evenings
-
-    wb.save("shift_schedule_output/shift_schedule_colored.xlsx")
-    print("Excel file created successfully.")
+    # Save file
+    filename = f"schedule_{start_date.strftime('%Y%m%d')}.xlsx"
+    wb.save(filename)
+    print(f"✅ Visual Excel report saved as: {filename}")

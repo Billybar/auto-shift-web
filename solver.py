@@ -22,21 +22,24 @@ class ShiftOptimizer:
                         f'shift_e{emp.id}_d{d}_s{s_def.id}'
                     )
 
-    def solve(self):
-        """Prepares and solves the model."""
-        # 1. Setup Variables
+    def solve(self, employee_settings_dict):
+        """
+        Prepares and solves the model.
+        :param employee_settings_dict: Dict mapping emp_id to EmployeeSettings object
+        """
         self._create_variables()
 
-        # 2. Delegate constraints to the Manager
         manager = ConstraintManager(
             self.model, self.shift_vars, self.employees, self.shifts, self.weights
         )
-        objective_terms = manager.apply_all_constraints()
 
-        # 3. Set Objective
+        # Apply constraints and get objective terms
+        # We no longer need a separate 'states' dict if we use fields from the Employee objects
+        objective_terms = manager.apply_all_constraints(employee_settings_dict, {})
+
+        # Set Objective: Minimize penalties
         self.model.Minimize(sum(objective_terms))
 
-        # 4. Solve
         status = self.solver.Solve(self.model)
         return status
 
